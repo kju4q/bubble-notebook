@@ -1,31 +1,38 @@
-# Bubble Notebook — breath feasibility prototype
+# Bubble Notebook — hands & breath feasibility prototype
 
-A small browser experiment: microphone input → growing bubble → release → drifting bubble and synthesized note. No API, account-specific data, external scripts, audio recording, or audio upload in the application.
+A small browser experiment: blow to grow a bubble, let it drift inside a notebook page, pinch to grab and move it, and double-pinch to pop a synthesized note.
 
 ## Try it
 
-1. Open the private deployed link, or serve `dist/` over localhost.
-2. Start microphone and allow access. Stay quiet for the two-second room calibration.
-3. Blow gently toward the selected microphone for 1–3 seconds. Stop to release the bubble.
-4. Compare a short and longer breath. Longer/larger bubbles should produce lower notes.
-5. Talk normally and check for unwanted triggers. Adjust sensitivity or the experimental speech filter if necessary. Recalibrate after changing the microphone or room.
+1. Add a practice bubble, then start the hand camera and allow camera access. Initial hand-tracker loading can take a few seconds.
+2. Show an open hand. A mirrored cursor follows your index fingertip; a dashed ring marks the selected bubble.
+3. Pinch thumb and index finger together over a bubble. Hold the pinch while moving, then open to release.
+4. Pinch and open twice quickly over the same bubble to pop it. Each pinch should be shorter than 300 ms, with the releases less than 650 ms apart. A drag does not count as a pop.
+5. Start microphone, stay quiet for the two-second calibration, then blow gently for 1–3 seconds. Stop to release the bubble. The established microphone interaction is preserved.
 
-The tune panel includes input selection, live level and threshold diagnostics. Headphones can reduce the chance of speaker notes triggering the mic. Switching away from the page stops microphone capture. No camera is requested.
+Pointer fallback: drag a bubble, or double-click it to pop. Keyboard: focus the bubble canvas, Space selects/cycles, arrows move, Enter pops. Bubbles stay on the page until popped or the page is refreshed. This version does not save pages.
 
-## What this establishes
+Camera and microphone tracks stop when switched off or when the page goes into the background. Input is processed locally, with no recording or upload. Camera and microphone are enabled separately. The tune panel contains microphone selection, sensitivity, level and threshold diagnostics. Headphones can reduce feedback from the notes.
 
-The browser interaction and synthetic signal pipeline have been tested. Human blowing on the user's actual microphone is still to be tested. The detector uses room-relative energy, sustained-input timing, spectral characteristics, and periodicity. It detects breath-like noise, not airflow. Sustained unvoiced speech, environmental wind, or music can produce false triggers. Realistic soap-film physics, Plateau junctions, hand input, and saved notebook pages are not included.
+## Implementation and limits
 
-Bubble drift and iridescence are visual approximations. Musical pitch is a designed inverse-radius mapping quantized to a C-major pentatonic scale. The sound is synthesized with decaying partials, not sampled piano.
+The microphone detector uses room-relative energy, sustained-input timing, spectral characteristics, and periodicity. It detects breath-like noise, not airflow. Unvoiced speech, wind, or music may still cause false triggers. The user confirmed real blowing worked on the earlier microphone version; this version's actual hand control still needs the user's physical camera test.
 
-## Verification
+Local MediaPipe Tasks Vision 1.0.1 provides hand landmarks. The model, JavaScript, and WebAssembly are self-hosted. See `dist/vendor/mediapipe/THIRD_PARTY.md` for sources, integrity information, and the license. Codex/Astra builds the application; MediaPipe supplies runtime hand landmarks. There are no OpenAI API calls in this prototype.
 
-`node --test tests/detector.test.mjs` — 7 tests passed: quiet input, sustained growth/release events, transient rejection, voiced-tone rejection, speaker cooldown, calibration/sensitivity, and actual waveform feature extraction.
+Gesture control uses normalized thumb–index distance, separate closing/opening thresholds, smoothed cursor positions, an open-hand arming step, and release on tracking loss. A held pinch moves a bubble; two short stationary pinches pop one. Motion and iridescence are visual approximations, not a soap-film simulation. Musical pitch is a designed inverse-radius mapping to a C-major pentatonic scale. Sound is synthesized with decaying partials, not sampled piano. Physics junctions, hand drawing, musical sequencing, and saved notebook pages are outside this small test.
 
-For browser integration, serve this project root on localhost and open `/tests/browser.html`. Its clearly labeled generated stream replaces the microphone only inside the isolated test iframe. Eight checks passed on September 16, 2026: calibration; quiet produces no bubbles; generated sustained noise begins growth; continued input grows radius from 37 to 60 pixels; silence releases one C4 bubble; a 220 Hz tone is rejected; stopping ends the input tracks; permission denial displays recovery guidance. These checks do not establish real-world breath/speech accuracy.
+## Verification — September 16, 2026
 
-The main screen was inspected in the local browser. The read-only WebMCP status tool was validated with valid and invalid input. The production static folder excludes the test fixture.
+`node --test tests/*.test.mjs`: 16 tests passed, covering breath detection and the hand/pointer state machine, including dragging without popping, double-pinches, different targets, tracking loss, pinch hysteresis, and page boundaries.
+
+Serve the project root on localhost to access the browser fixtures. These are outside the deployed `dist/` folder:
+
+- `/tests/hands-browser.html`: eight checks passed. A practice bubble appears; dragging clamps to the page; double-click pops once and selects a note; the actual bundled model loads and processes generated video; a blank scene produces no hand; stopping ends the track; denied permission displays recovery guidance; cancelling a pending request stops a late-arriving stream. These use generated video and scripted pointer input, not a physical hand.
+- `/tests/browser.html`: eight microphone regression checks passed. Calibration and silence behavior; sustained generated noise begins growth and grows radius from 45 to 64 pixels; silence releases one C4 bubble; a 220 Hz tone is rejected; stopping ends input tracks; denied permission displays guidance.
+
+These checks do not establish real-world hand-tracking or breath/speech accuracy. That is the purpose of the user's next live test.
 
 ## Local development
 
-No installation or build needed. Serve `dist/` with an HTTP server, for example `python3 -m http.server 4173 --bind 127.0.0.1 --directory dist`. Microphone access requires HTTPS or localhost.
+No install or build is required. Serve `dist/` over localhost, for example `python3 -m http.server 4173 --bind 127.0.0.1 --directory dist`. Camera and microphone require HTTPS or localhost.
