@@ -1,6 +1,7 @@
 import{BreathGate,audioFeatures,clamp,db}from'./detector.mjs';
 import{BubbleInteraction,keepInside}from'./interaction.mjs';
 import{CameraHands}from'./hands.mjs';
+import{GeometryLens}from'./geometry.mjs';
 const $=id=>document.getElementById(id);
 const ui={mic:$('mic-button'),recal:$('recalibrate'),status:$('status'),hint:$('hint'),device:$('device'),sens:$('sensitivity'),filter:$('filter'),sound:$('sound'),level:$('level'),fill:$('meter-fill'),marker:$('threshold-marker'),count:$('count'),diag:$('diagnostic'),paper:$('paper-state'),note:$('note-label')};
 const canvas=$('scene'),g=canvas.getContext('2d'),gate=new BreathGate();
@@ -10,22 +11,62 @@ let running=false,pending=false,attempt=0,calibrationEnd=0,noiseSamples=[],block
 let w=800,h=390,dpr=1,current=null,bubbles=[],total=0,time=0,lastNote=null,raf=0,metrics={levelDb:null,thresholdDb:null,detected:false},mode='off';
 const voices=new Set(),reduceMotion=matchMedia('(prefers-reduced-motion: reduce)').matches;
 let bubbleId=0,popped=0,held=null,hover=null,cursor=null,particles=[],pointerActive=false,keyboardSelection=null,inputSource=null;
+const geometry=new GeometryLens({onChange:updateGeometryUI});
+let grabStarted=0;
+function updateGeometryUI(state){
+  document.querySelector('.notebook').classList.toggle('geometry-active',state.active);
+  for(const id of ['geometry-panel','geometry-scale-wrap','geometry-back'])$(id).hidden=!state.active;
+  $('geometry-open').disabled=state.active;$('practice').disabled=state.active;
+  $('geometry-scale').value=state.scale;
+  for(const key of ['radius','area','volume','pressure'])$('geometry-'+key).textContent=state.ratios[key].toFixed(2)+'×';
+  $('geometry-scale-value').textContent=state.scale.toFixed(2)+'×';
+  $('geometry-summary').textContent=state.scale===1?'Same radius. Same geometry.':state.scale===2?'Twice the radius. Four times the surface. Eight times the volume.':state.ratios.area.toFixed(2)+'× surface area · '+state.ratios.volume.toFixed(2)+'× volume · '+state.ratios.pressure.toFixed(2)+'× excess pressure.';
+}
+function openGeometry(b){
+  if(!b||geometry.active)return;
+  if(current)releaseBubble(false);
+  interaction.cancel();keyboardSelection=null;hover=null;grabStarted=0;gate.reset();
+  geometry.open(b);status('Geometry view · return to the notebook to blow more bubbles.');
+  ui.paper.textContent='The geometry inside your bubble.';
+  canvas.setAttribute('aria-label','3D sphere. Drag to rotate. Use the radius slider to compare sizes. Escape returns to bubbles.');
+}
+function closeGeometry(){
+  if(!geometry.active)return;
+  geometry.close();interaction.cancel();cursor=null;pointerActive=false;grabStarted=0;blockedUntil=performance.now()+500;
+  ui.paper.textContent='Back in your notebook. Your bubbles are still here.';
+  status(running?'Ready. Blow gently toward your microphone.':'Start the microphone to make another bubble.');
+  canvas.setAttribute('aria-label','Bubble page. Drag to move; hold still to reveal geometry; double-click to pop.');
+}
+function geometryInput(point,now){
+  const c=canvas.getBoundingClientRect(),r=$('geometry-scale').getBoundingClientRect();
+  const playScale=point&&!point.closed&&geometry.drag?.mode==='scale';
+  geometry.input(point,now,{width:w,height:h,track:{left:r.left-c.left+8,right:r.right-c.left-8,y:r.top-c.top+r.height/2}});
+  if(playScale)geometryTone();
+}
+function geometryTone(){if(!geometry.source||!ui.sound.checked)return;void ensureAudio().then(()=>{playNote(geometry.source.frequency/geometry.scale,.4);blockedUntil=performance.now()+1700;});}
+$('geometry-back').addEventListener('click',closeGeometry);
+$('geometry-open').addEventListener('click',()=>{if(!bubbles.length)$('practice').click();openGeometry(keyboardSelection||hover||bubbles.at(-1));});
+$('geometry-scale').addEventListener('input',e=>geometry.setScale(Number(e.target.value)));
+$('geometry-scale').addEventListener('change',geometryTone);
+$('geometry-double').addEventListener('click',()=>{geometry.setScale(2);geometryTone();});
+$('geometry-reset').addEventListener('click',()=>{geometry.setScale(1);geometryTone();});
+document.addEventListener('keydown',e=>{if(e.key==='Escape'&&geometry.active){closeGeometry();$('geometry-open').focus();}});
 const bounds=()=>({left:50,right:w-12,top:50,bottom:h-35});
 const countBubbles=()=>{ui.count.textContent=bubbles.length+' on page · '+popped+' popped';};
 function pick(x,y){return [...bubbles].reverse().find(b=>Math.hypot(x-b.x,y-b.y)<=b.r+10)||null;}
-const interaction=new BubbleInteraction({pick,onGrab(b){held=b;b.vx=b.vy=0;ui.paper.textContent='Got it. Move your hand, then open your fingers.';},onMove(b,x,y){b.x=x;b.y=y;keepInside(b,bounds());},onRelease(b){held=null;b.vx=b.vy=0;ui.paper.textContent='Released. Two quick pinches will pop it.';},onPop:popBubble});
+const interaction=new BubbleInteraction({pick,onGrab(b){held=b;grabStarted=performance.now();b.vx=b.vy=0;ui.paper.textContent='Hold still to reveal the geometry, or move to drag.';},onMove(b,x,y){b.x=x;b.y=y;keepInside(b,bounds());},onRelease(b){held=null;grabStarted=0;b.vx=b.vy=0;ui.paper.textContent='Released. Two quick pinches will pop it.';},onPop:popBubble});
 function handStatus(message){const el=$('hand-status');if(el.textContent!==message)el.textContent=message;$('camera-preview').hidden=!hands.stream;const on=!['off','error'].includes(hands.state);$('camera-button').textContent=on?'Stop hand camera':'Start hand camera';}
-const hands=new CameraHands({video:$('hand-video'),onStatus:handStatus,onPoint(point,now){if(pointerActive)return;if(inputSource!=='hand'){interaction.cancel();inputSource='hand';}if(!point){cursor=null;interaction.cancel();hover=null;return;}const target={x:50+point.x*(w-62),y:50+point.y*(h-85),closed:point.closed};if(cursor){const amount=1-Math.exp(-65/65);target.x=cursor.x+(target.x-cursor.x)*amount;target.y=cursor.y+(target.y-cursor.y)*amount;}cursor=target;interaction.update(target,now);hover=interaction.hover;handStatus(held?'Holding a bubble · open your fingers to release.':hover?'Bubble selected · pinch to grab, double-pinch to pop.':'Hand found · point your index finger at a bubble.');}});
+const hands=new CameraHands({video:$('hand-video'),onStatus:handStatus,onPoint(point,now){if(pointerActive)return;if(inputSource!=='hand'){interaction.cancel();inputSource='hand';}if(!point){cursor=null;interaction.cancel();geometryInput(null,now);hover=null;return;}const target={x:50+point.x*(w-62),y:50+point.y*(h-85),closed:point.closed};if(cursor){const amount=1-Math.exp(-65/65);target.x=cursor.x+(target.x-cursor.x)*amount;target.y=cursor.y+(target.y-cursor.y)*amount;}cursor=target;if(geometry.active){geometryInput(target,now);handStatus('Pinch to rotate the sphere · pinch along the slider to resize.');return;}interaction.update(target,now);hover=interaction.hover;handStatus(held?'Holding a bubble · open your fingers to release.':hover?'Bubble selected · pinch to grab, double-pinch to pop.':'Hand found · point your index finger at a bubble.');}});
 async function ensureAudio(){try{const C=window.AudioContext||window.webkitAudioContext;context??=new C();if(context.state==='suspended')await context.resume();}catch{}}
 function popBubble(b){if(!bubbles.includes(b))return;const idx=bubbles.indexOf(b);bubbles.splice(idx,1);held=null;hover=null;if(keyboardSelection===b)keyboardSelection=null;popped++;lastNote=b.note.name;ui.note.textContent=b.note.name;ui.paper.textContent='Pop. '+b.note.name+' floats into a note.';countBubbles();for(let i=0;i<14;i++){const a=i/14*Math.PI*2;particles.push({x:b.x+Math.cos(a)*b.r,y:b.y+Math.sin(a)*b.r,vx:Math.cos(a)*32,vy:Math.sin(a)*32,age:0,h:b.note.h});}if(ui.sound.checked){playNote(b.note.f,b.intensity);blockedUntil=performance.now()+950;}}
 $('camera-button').addEventListener('click',()=>{if(!['off','error'].includes(hands.state))hands.stop();else{void ensureAudio();hands.start();}});
 $('practice').addEventListener('click',()=>{void ensureAudio();if(bubbles.length>=18){ui.paper.textContent='Pop a bubble to make room for another.';return;}const r=44,b={id:++bubbleId,x:w*.5,y:h*.46,r,volume:r**3,note:noteForRadius(r),vx:0,vy:-4,age:0,seed:Math.random()*10,intensity:.4};bubbles.push(b);keepInside(b,bounds());countBubbles();ui.paper.textContent='Practice bubble. Point, pinch, move, pop.';});
 function pointerPoint(e,closed){const rect=canvas.getBoundingClientRect();return{x:e.clientX-rect.left,y:e.clientY-rect.top,closed};}
-canvas.addEventListener('pointerdown',e=>{if(e.button!==0)return;void ensureAudio();pointerActive=true;if(inputSource!=='pointer')interaction.cancel();inputSource='pointer';keyboardSelection=null;const p=pointerPoint(e,false);interaction.update(p,performance.now());interaction.update({...p,closed:true},performance.now());hover=interaction.hover;canvas.setPointerCapture(e.pointerId);});
-canvas.addEventListener('pointermove',e=>{if(!pointerActive)return;const p=pointerPoint(e,true);interaction.update(p,performance.now());hover=interaction.hover;});
-canvas.addEventListener('pointerup',e=>{if(!pointerActive)return;interaction.update(pointerPoint(e,false),performance.now());hover=interaction.hover;pointerActive=false;});
-for(const type of['pointercancel','lostpointercapture'])canvas.addEventListener(type,()=>{if(pointerActive){interaction.cancel();held=null;pointerActive=false;}});
-canvas.addEventListener('keydown',e=>{if(![' ','Enter','ArrowLeft','ArrowRight','ArrowUp','ArrowDown'].includes(e.key))return;e.preventDefault();void ensureAudio();if(e.key===' '||!bubbles.includes(keyboardSelection)){keyboardSelection=bubbles[(bubbles.indexOf(keyboardSelection)+1)%bubbles.length]||null;hover=keyboardSelection;return;}if(e.key==='Enter'){popBubble(keyboardSelection);return;}const step=e.shiftKey?30:10;keyboardSelection.x+=(e.key==='ArrowRight'?step:e.key==='ArrowLeft'?-step:0);keyboardSelection.y+=(e.key==='ArrowDown'?step:e.key==='ArrowUp'?-step:0);keepInside(keyboardSelection,bounds());});
+canvas.addEventListener('pointerdown',e=>{if(e.button!==0)return;void ensureAudio();pointerActive=true;if(inputSource!=='pointer')interaction.cancel();inputSource='pointer';keyboardSelection=null;const p=pointerPoint(e,false);if(geometry.active){geometryInput(p,performance.now());geometryInput({...p,closed:true},performance.now());canvas.setPointerCapture(e.pointerId);return;}interaction.update(p,performance.now());interaction.update({...p,closed:true},performance.now());hover=interaction.hover;canvas.setPointerCapture(e.pointerId);});
+canvas.addEventListener('pointermove',e=>{if(!pointerActive)return;const p=pointerPoint(e,true);if(geometry.active){geometryInput(p,performance.now());return;}interaction.update(p,performance.now());hover=interaction.hover;});
+canvas.addEventListener('pointerup',e=>{if(!pointerActive)return;if(geometry.active){geometryInput(pointerPoint(e,false),performance.now());pointerActive=false;return;}interaction.update(pointerPoint(e,false),performance.now());hover=interaction.hover;pointerActive=false;});
+for(const type of['pointercancel','lostpointercapture'])canvas.addEventListener(type,()=>{if(pointerActive){interaction.cancel();geometryInput(null,performance.now());held=null;pointerActive=false;}});
+canvas.addEventListener('keydown',e=>{if(geometry.active){if(['ArrowLeft','ArrowRight','ArrowUp','ArrowDown'].includes(e.key)){e.preventDefault();geometry.yaw+=(e.key==='ArrowLeft'?-.15:e.key==='ArrowRight'?.15:0);geometry.pitch=clamp(geometry.pitch+(e.key==='ArrowUp'?-.1:e.key==='ArrowDown'?.1:0),-1.3,1.3);}return;}if(![' ','Enter','ArrowLeft','ArrowRight','ArrowUp','ArrowDown'].includes(e.key))return;e.preventDefault();void ensureAudio();if(e.key===' '||!bubbles.includes(keyboardSelection)){keyboardSelection=bubbles[(bubbles.indexOf(keyboardSelection)+1)%bubbles.length]||null;hover=keyboardSelection;return;}if(e.key==='Enter'){popBubble(keyboardSelection);return;}const step=e.shiftKey?30:10;keyboardSelection.x+=(e.key==='ArrowRight'?step:e.key==='ArrowLeft'?-step:0);keyboardSelection.y+=(e.key==='ArrowDown'?step:e.key==='ArrowUp'?-step:0);keepInside(keyboardSelection,bounds());});
 function status(message,kind=''){if(ui.status.textContent!==message)ui.status.textContent=message;ui.status.dataset.kind=kind;}
 function setMode(next){mode=next;}
 function noteForRadius(radius){const f=523.25*28/Math.max(28,radius);return notes.reduce((a,b)=>Math.abs(Math.log(b.f/f))<Math.abs(Math.log(a.f/f))?b:a);}
@@ -64,6 +105,7 @@ function measure(now){
   if(!running||!analyser)return;const elapsed=lastMeasure?now-lastMeasure:32;if(elapsed<30)return;lastMeasure=now;
   analyser.getFloatTimeDomainData(pcm);analyser.getFloatFrequencyData(spectrum);const f=audioFeatures(pcm,spectrum,context.sampleRate);
   if(calibrationEnd){noiseSamples.push(f.rms);if(now>=calibrationEnd){gate.setNoise(noiseSamples);calibrationEnd=0;setMode('ready');ui.recal.disabled=false;ui.paper.textContent='Ready for your first breath.';status('Ready. Blow gently toward your microphone.');if(gate.noise>.03){status('The room is quite loud. Try a quieter spot, then recalibrate.');}}}
+  else if(geometry.active){gate.reset();metrics.detected=false;}
   else if(context.state!=='running'){status('Audio is paused. Stop and restart the microphone.');}
   else{
     const result=gate.update(f,elapsed,{blocked:now<blockedUntil});metrics.detected=result.active;
@@ -83,9 +125,17 @@ function bubbleDraw(b,now,isGrowing=false){
   if(b===hover||b===held||b===keyboardSelection){g.beginPath();g.arc(0,0,r+7,0,Math.PI*2);g.setLineDash([3,5]);g.strokeStyle=b===held?'#365957':'#a58486';g.lineWidth=1;g.stroke();g.setLineDash([]);}
   g.fillStyle='rgba(64,89,96,.7)';g.font='italic 14px Georgia';g.textAlign='center';g.textBaseline='middle';g.fillText(b.note.name,0,0);g.restore();
 }
-function frame(now){const dt=Math.min(.045,framePrevious?(now-framePrevious)/1000:0);framePrevious=now;time+=dt;interaction.expire(now);measure(now);g.clearRect(0,0,w,h);const o=origin();
-  g.save();g.translate(o.x,o.y);g.rotate(-.13);g.strokeStyle='#737e79';g.lineWidth=1.3;g.beginPath();g.ellipse(0,0,17,6,0,0,Math.PI*2);g.moveTo(0,6);g.lineTo(0,23);g.stroke();g.restore();
-  for(const b of bubbles){b.age+=dt;if(b!==held&&b!==keyboardSelection&&b!==interaction.lastTap?.bubble){const wind=reduceMotion?0:Math.sin(time*.6+b.seed)*7,vertical=reduceMotion?0:Math.sin(time*.45+b.seed*2)*6;b.vx+=(wind-b.vx)*dt*.7;b.vy+=(vertical-b.vy)*dt*.35;b.x+=b.vx*dt;b.y+=b.vy*dt;keepInside(b,bounds());}bubbleDraw(b,now);}
+function frame(now){
+  const dt=Math.min(.045,framePrevious?(now-framePrevious)/1000:0);framePrevious=now;time+=dt;interaction.expire(now);
+  if(!geometry.active&&held&&grabStarted&&now-grabStarted>700&&interaction.maxTravel<18)openGeometry(held);
+  geometry.step(dt,now,reduceMotion);measure(now);g.clearRect(0,0,w,h);const o=origin();
+  g.save();g.globalAlpha=1-geometry.progress;g.translate(o.x,o.y);g.rotate(-.13);g.strokeStyle='#737e79';g.lineWidth=1.3;g.beginPath();g.ellipse(0,0,17,6,0,0,Math.PI*2);g.moveTo(0,6);g.lineTo(0,23);g.stroke();g.restore();
+  for(const b of bubbles){
+    b.age+=dt;
+    if(!geometry.active&&geometry.progress<.01&&b!==held&&b!==keyboardSelection&&b!==interaction.lastTap?.bubble){const wind=reduceMotion?0:Math.sin(time*.6+b.seed)*7,vertical=reduceMotion?0:Math.sin(time*.45+b.seed*2)*6;b.vx+=(wind-b.vx)*dt*.7;b.vy+=(vertical-b.vy)*dt*.35;b.x+=b.vx*dt;b.y+=b.vy*dt;keepInside(b,bounds());}
+    g.save();g.globalAlpha=1-geometry.progress;bubbleDraw(b,now);g.restore();
+  }
+  geometry.draw(g,w,h,now);
   for(const p of particles){p.age+=dt;p.x+=p.vx*dt;p.y+=p.vy*dt;p.vy+=18*dt;g.fillStyle=`hsla(${p.h},55%,57%,${Math.max(0,1-p.age/.6)*.7})`;g.beginPath();g.arc(p.x,p.y,2,0,Math.PI*2);g.fill();}particles=particles.filter(p=>p.age<.6);
   if(cursor){g.beginPath();g.arc(cursor.x,cursor.y,cursor.closed?5:9,0,Math.PI*2);g.strokeStyle='#365957';g.lineWidth=2;g.stroke();if(cursor.closed){g.fillStyle='#365957';g.fill();}}
   if(current)bubbleDraw(current,now,true);raf=requestAnimationFrame(frame);
@@ -94,5 +144,5 @@ dimensions();raf=requestAnimationFrame(frame);
 window.addEventListener('pagehide',()=>{stop();hands.dispose();cancelAnimationFrame(raf);context?.close();});
 document.addEventListener('visibilitychange',()=>{if(document.hidden){if(running)stop('Microphone stopped while this page was in the background.');if(!['off','error'].includes(hands.state))hands.stop('Camera stopped while this page was in the background.');interaction.cancel();}});
 // Read-only diagnostics also make camera-free, repeatable input testing inspectable.
-window.bubbleBreath={status:()=>({mode,microphoneActive:running,calibrating:!!calibrationEnd,bubblesReleased:total,bubblesOnPage:bubbles.length,bubblesPopped:popped,growing:!!current,radius:current?Math.round(current.r):null,lastNote,sensitivity:gate.sensitivity,speechFilter:gate.filterSpeech,cameraState:hands.state,cameraFramesProcessed:hands.frames,handVisible:!!cursor,heldBubble:held?.id??null,positions:bubbles.map(b=>({id:b.id,x:Math.round(b.x),y:Math.round(b.y),r:Math.round(b.r),note:b.note.name})),...metrics})};
+window.bubbleBreath={status:()=>({mode,microphoneActive:running,calibrating:!!calibrationEnd,bubblesReleased:total,bubblesOnPage:bubbles.length,bubblesPopped:popped,growing:!!current,radius:current?Math.round(current.r):null,lastNote,sensitivity:gate.sensitivity,speechFilter:gate.filterSpeech,cameraState:hands.state,cameraFramesProcessed:hands.frames,handVisible:!!cursor,heldBubble:held?.id??null,geometry:geometry.status(),positions:bubbles.map(b=>({id:b.id,x:Math.round(b.x),y:Math.round(b.y),r:Math.round(b.r),note:b.note.name})),...metrics})};
 if(document.modelContext?.registerTool){const lifecycle=new AbortController();try{Promise.resolve(document.modelContext.registerTool({name:'read_breath_test_status',title:'Read breath test status',description:'Read microphone state, detection levels, and the number of released bubbles. Does not start the microphone or access audio.',inputSchema:{type:'object',properties:{},additionalProperties:false},annotations:{readOnlyHint:true,untrustedContentHint:false},execute(input){if(!input||typeof input!=='object'||Object.keys(input).length)throw new Error('Expected an empty object.');return window.bubbleBreath.status();}},{signal:lifecycle.signal})).catch(()=>{});}catch{}window.addEventListener('pagehide',()=>lifecycle.abort(),{once:true});}

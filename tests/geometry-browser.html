@@ -1,0 +1,33 @@
+<!doctype html><html lang="en"><meta charset="utf-8"><title>Geometry interaction QA</title>
+<style>body{font:15px system-ui;padding:16px}button{padding:12px}pre{white-space:pre-wrap}iframe{width:100%;height:900px}</style>
+<h1>Geometry interaction check</h1><button id="run">Run geometry checks</button><pre id="result">Checks the hold gesture, rotation, scale results, return transition and existing pop action with scripted input.</pre><iframe src="../dist/index.html"></iframe>
+<script type="module">
+const wait=ms=>new Promise(r=>setTimeout(r,ms));
+const out=document.getElementById('result'),button=document.getElementById('run');
+button.onclick=async()=>{
+ button.disabled=true;const rows=[];
+ const report=(label,pass,data)=>{rows.push({label,pass,data});out.textContent=JSON.stringify(rows,null,2);if(!pass)throw new Error(label);};
+ try{
+  const win=document.querySelector('iframe').contentWindow,doc=win.document,canvas=doc.getElementById('scene'),status=()=>win.bubbleBreath.status();
+  const capture=canvas.setPointerCapture;canvas.setPointerCapture=()=>{};
+  const pointer=(type,x,y)=>{const r=canvas.getBoundingClientRect();canvas.dispatchEvent(new win.PointerEvent(type,{bubbles:true,clientX:r.left+x,clientY:r.top+y,pointerId:1,button:0}));};
+  doc.getElementById('practice').click();const original=status().positions[0];
+  pointer('pointerdown',original.x,original.y);await wait(1000);
+  report('Still hold reveals geometry',status().geometry.active,status().geometry);
+  pointer('pointerup',original.x,original.y);await wait(600);
+  const yaw=status().geometry.yaw;pointer('pointerdown',160,160);pointer('pointermove',240,180);pointer('pointerup',240,180);
+  report('Dragging rotates actual 3D geometry',Math.abs(status().geometry.yaw-yaw)>.5,status().geometry);
+  doc.getElementById('geometry-double').click();await wait(600);
+  report('Double radius displays 4× area, 8× volume, half pressure',doc.getElementById('geometry-area').textContent==='4.00×'&&doc.getElementById('geometry-volume').textContent==='8.00×'&&doc.getElementById('geometry-pressure').textContent==='0.50×',status().geometry);
+  doc.getElementById('geometry-reset').click();report('Reset restores original ratios',status().geometry.scale===1,status().geometry);
+  doc.getElementById('geometry-back').click();await wait(1000);
+  report('Return preserves the original bubble and radius',!status().geometry.active&&status().bubblesOnPage===1&&status().positions[0].r===original.r,status());
+  let b=status().positions[0];pointer('pointerdown',b.x,b.y);await wait(50);pointer('pointerup',b.x,b.y);await wait(80);pointer('pointerdown',b.x,b.y);await wait(50);pointer('pointerup',b.x,b.y);
+  report('Quick double pinch still pops instead of opening geometry',status().bubblesPopped===1&&!status().geometry.active,status());
+  canvas.setPointerCapture=capture;
+  doc.getElementById('geometry-open').click();report('Button provides a camera-free entry',status().geometry.active,status().geometry);
+  doc.dispatchEvent(new win.KeyboardEvent('keydown',{key:'Escape',bubbles:true}));report('Escape returns to notebook',!status().geometry.active,status().geometry);
+  out.textContent='PASS — geometry interaction and return flow\n'+JSON.stringify(rows,null,2);
+ }catch(e){out.textContent+='\nFAIL: '+e.message;}finally{button.disabled=false;}
+};
+</script></html>
