@@ -1,5 +1,9 @@
 export const clamp=(n,lo,hi)=>Math.max(lo,Math.min(hi,n));
 export const db=(n)=>20*Math.log10(Math.max(n,1e-7));
+export function soundCharacter(f){
+  return {voice:f.periodicity>.68&&f.flatness<.2,
+    noiseLike:f.flatness>.025||f.lowFraction>.24||f.periodicity<.42};
+}
 
 // Local signal heuristics, not a trained classifier or an airflow measurement.
 export function audioFeatures(samples,spectrum,sampleRate){
@@ -19,7 +23,8 @@ export function audioFeatures(samples,spectrum,sampleRate){
   const flatness=bandN?Math.exp(logPower/bandN)/(bandSum/bandN+1e-14):0;
   // Normalized autocorrelation estimates sustained voicing. Downsample for cost.
   let periodicity=0;
-  if(rms>.001){
+  // Quiet built-in microphones still need voicing checks during gain calibration.
+  if(rms>.00003){
     const stride=3,n=Math.min(320,Math.floor(samples.length/stride)),minLag=Math.max(8,Math.floor(sampleRate/stride/450)),maxLag=Math.min(n-100,Math.floor(sampleRate/stride/85));
     for(let lag=minLag;lag<=maxLag;lag+=2){let cross=0,a=0,b=0;
       for(let j=0;j<n-lag;j++){const x=samples[j*stride]-mean,y=samples[(j+lag)*stride]-mean;cross+=x*y;a+=x*x;b+=y*y;}
@@ -38,11 +43,14 @@ export class BreathGate{
     dt=clamp(dt,0,80);const threshold=this.threshold();
     this.smooth+=(f.rms-this.smooth)*(1-Math.exp(-dt/65));
     const loud=this.smooth>threshold*(this.active?.7:1);
-    const voice=f.periodicity>.68&&f.flatness<.2;
-    const noiseLike=f.flatness>.025||f.lowFraction>.24||f.periodicity<.42;
+    const {voice,noiseLike}=soundCharacter(f);
     const candidate=!blocked&&loud&&(!this.filterSpeech||(!voice&&noiseLike));
+    // Accumulate the same 180 ms of above-threshold, speech-filtered evidence
+    // while the 65 ms smoother settles, instead of putting the two waits in series.
+    // Starting still requires BOTH sustained evidence and smoothed level > threshold.
+    const attackCandidate=!blocked&&f.rms>threshold&&(!this.filterSpeech||(!voice&&noiseLike));
     let started=false,ended=false;
-    if(!this.active){this.onMs=candidate?this.onMs+dt:Math.max(0,this.onMs-dt*1.7);if(this.onMs>=180){this.active=true;started=true;this.activeMs=0;this.offMs=0;}}
+    if(!this.active){this.onMs=attackCandidate?this.onMs+dt:Math.max(0,this.onMs-dt*1.7);if(this.onMs>=180&&candidate){this.active=true;started=true;this.activeMs=0;this.offMs=0;}}
     else {this.activeMs+=dt;this.offMs=candidate?0:this.offMs+dt;if(this.offMs>=280){this.active=false;ended=true;this.onMs=0;this.offMs=0;}}
     const intensity=candidate?clamp((this.smooth-threshold*.7)/(threshold*5+.018),.12,1):0;
     return{active:this.active,started,ended,candidate,voice,loud,intensity,threshold,level:this.smooth};

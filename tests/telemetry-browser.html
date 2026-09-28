@@ -1,0 +1,44 @@
+<!doctype html><html lang="en"><meta charset="utf-8"><title>Telemetry CSP verification</title>
+<style>body{font:14px system-ui;margin:16px}button{padding:10px}pre{white-space:pre-wrap}iframe{width:100%;height:740px}</style>
+<h1>Real camera, 70-second CSP verification</h1>
+<label><input id="generated" type="checkbox"> Use generated video instead of the physical camera</label>
+<button id="run">Start camera verification</button><pre id="result">Keep this page foregrounded. No media is recorded. The actual model, fetch and CSP run in either mode.</pre>
+<iframe src="../dist/index.html"></iframe>
+<script type="module">
+const frame=document.querySelector('iframe'),out=document.querySelector('pre'),button=document.querySelector('button');
+const wait=ms=>new Promise(r=>setTimeout(r,ms));
+button.onclick=async()=>{
+ button.disabled=true;
+ const win=frame.contentWindow,doc=win.document,read=()=>win.bubbleBreath.status();
+ const originalFetch=win.fetch,originalMedia=win.navigator.mediaDevices.getUserMedia,requests=[],violations=[],errors=[],samples=[];
+ let animation,generatedStream;
+ const generated=document.getElementById('generated').checked;
+ const report={browser:navigator.userAgent,input:generated?'generated video, real model and network':'physical camera',csp:doc.querySelector('meta[http-equiv="Content-Security-Policy"]').content,requests,violations,errors,samples};
+ const render=()=>{out.textContent=JSON.stringify(report,null,2);};
+ win.fetch=async function(input,init){
+  const row={url:String(input?.url??input),method:init?.method??'GET',at:new Date().toISOString()};requests.push(row);
+  try{const response=await originalFetch.call(this,input,init);row.status=response.status;row.ok=response.ok;return response;}
+  catch(error){row.error=String(error);throw error;}finally{render();}
+ };
+ const onViolation=e=>{violations.push({url:e.blockedURI,directive:e.effectiveDirective,disposition:e.disposition});render();};
+ const onError=e=>{errors.push(String(e.error??e.reason??e.message));render();};
+ doc.addEventListener('securitypolicyviolation',onViolation);win.addEventListener('error',onError);win.addEventListener('unhandledrejection',onError);
+ try{
+  if(generated){const source=document.createElement('canvas');source.width=320;source.height=240;const g=source.getContext('2d');animation=setInterval(()=>{g.fillStyle='#eee8dc';g.fillRect(0,0,320,240);g.fillStyle='#809ba0';g.fillRect(Date.now()/30%280,100,20,20);},33);generatedStream=source.captureStream(30);win.navigator.mediaDevices.getUserMedia=async()=>generatedStream;}
+  doc.getElementById('quick-camera').click();const deadline=performance.now()+60000;
+  while(read().cameraFramesProcessed<3&&read().cameraState!=='error'&&performance.now()<deadline)await wait(200);
+  if(read().cameraFramesProcessed<3)throw Error(doc.getElementById('hand-status').textContent);
+  report.startedAt=new Date().toISOString();const start=performance.now();
+  for(let i=0;i<=7;i++){
+   const s=read();samples.push({elapsedMs:Math.round(performance.now()-start),state:s.cameraState,frames:s.cameraFramesProcessed,handVisible:s.handVisible});render();
+   if(i<7)await wait(10000);
+  }
+  const video=doc.getElementById('hand-video'),tracks=video.srcObject.getTracks();
+  doc.getElementById('quick-camera').click();await wait(500);
+  const telemetry=requests.filter(r=>r.url.includes('odml.pa.googleapis.com'));
+  report.result={elapsedMs:Math.round(performance.now()-start),telemetryAttempts:telemetry.length,successfulTelemetry:telemetry.filter(r=>r.ok).length,cspBlocked:violations.some(v=>v.url.includes('odml.pa.googleapis.com')&&v.directive==='connect-src'),inferenceContinued:samples.at(-1).frames>samples.at(-2).frames,stopped:read().cameraState==='off'&&tracks.every(t=>t.readyState==='ended'),uncaughtErrors:errors.length};
+  report.pass=report.result.telemetryAttempts>0&&report.result.successfulTelemetry===0&&report.result.cspBlocked&&report.result.inferenceContinued&&report.result.stopped&&errors.length===0;
+ }catch(e){report.failure=String(e);report.pass=false;}
+ finally{if(!['off','error'].includes(read().cameraState))doc.getElementById('quick-camera').click();win.fetch=originalFetch;win.navigator.mediaDevices.getUserMedia=originalMedia;clearInterval(animation);generatedStream?.getTracks().forEach(t=>t.stop());doc.removeEventListener('securitypolicyviolation',onViolation);win.removeEventListener('error',onError);win.removeEventListener('unhandledrejection',onError);render();button.disabled=false;}
+};
+</script></html>

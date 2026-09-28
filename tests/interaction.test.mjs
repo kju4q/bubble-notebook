@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import {BubbleInteraction,keepInside,handPoint} from '../dist/interaction.mjs';
+import {BubbleInteraction,keepInside,handPoint,smoothHandCursor} from '../dist/interaction.mjs';
 
 function fixture(){
   const bubble={x:100,y:100,r:30,vx:0,vy:0};
@@ -56,4 +56,49 @@ test('normalized hand cursor is mirrored and pinch has hysteresis',()=>{
   hand[8]={x:.3,y:.3};hand[4]={x:.42,y:.3};assert.equal(handPoint(hand).closed,true);
   assert.equal(handPoint(hand).x,.7);hand[4].x=.49;assert.equal(handPoint(hand,false).closed,false);assert.equal(handPoint(hand,true).closed,true);
   hand[4].x=.6;assert.equal(handPoint(hand,true).closed,false);assert.equal(handPoint([]),null);
+});
+
+test('still hold needs two seconds, tolerates small jitter, and release clears it',()=>{
+  const f=fixture();f.at(100,100,false,0);f.at(100,100,true,100);
+  f.at(104,103,true,900);f.at(98,100,true,1600);
+  assert.equal(f.control.readyToExplore(2099),false);
+  assert.equal(f.control.readyToExplore(2100),true);
+  f.at(98,100,false,2110);assert.equal(f.control.readyToExplore(5000),false);
+});
+test('dragging for longer than two seconds postpones geometry until a fresh still hold',()=>{
+  const f=fixture();f.at(100,100,false,0);f.at(100,100,true,100);
+  for(let t=500;t<=3500;t+=500){f.at(100+t/10,100,true,t);assert.equal(f.control.readyToExplore(t),false);}
+  assert.equal(f.control.readyToExplore(5499),false);
+  assert.equal(f.control.readyToExplore(5500),true);
+  f.control.cancel();assert.equal(f.control.readyToExplore(8000),false);
+  f.at(450,100,false,8100);f.at(450,100,true,8200);
+  assert.equal(f.control.readyToExplore(10199),false);
+});
+test('cursor follows a moving fingertip within four pixels at 30 fps without overshoot',()=>{
+  let cursor={x:0,y:0,closed:false};
+  for(let i=1;i<=30;i++){
+    const target={x:i*50,y:i*20,closed:true};cursor=smoothHandCursor(cursor,target,1000/30);
+    assert.ok(Math.hypot(cursor.x-target.x,cursor.y-target.y)<4);
+    assert.ok(cursor.x<=target.x&&cursor.y<=target.y);assert.equal(cursor.closed,true);
+  }
+});
+test('cursor smoothing follows elapsed time and resets on reacquisition',()=>{
+  const origin={x:0,y:0,closed:false},target={x:100,y:80,closed:true};
+  const once=smoothHandCursor(origin,target,32),twice=smoothHandCursor(smoothHandCursor(origin,target,16),target,16);
+  assert.ok(Math.abs(once.x-twice.x)<1e-10&&Math.abs(once.y-twice.y)<1e-10);
+  assert.deepEqual(smoothHandCursor(null,target,16),target);
+  assert.deepEqual(smoothHandCursor(origin,target,250),target);
+});
+
+test('overlapping bubbles never change the owner of a continuous drag',()=>{
+  const a={x:100,y:100,r:30},b={x:240,y:100,r:30},events=[];let picks=0;
+  const control=new BubbleInteraction({pick:(x,y)=>{picks++;return [b,a].find(b=>Math.hypot(x-b.x,y-b.y)<40);},onGrab:b=>events.push(b),onMove:(b,x,y)=>Object.assign(b,{x,y})});
+  control.update({x:110,y:100,closed:false},0);control.update({x:110,y:100,closed:true},50);
+  const before=picks;
+  for(const [i,x]of [240,250,300,350].entries()){
+    control.update({x,y:100,closed:true},100+i*50);
+    assert.equal(control.held,a);assert.equal(a.x,x-10);assert.equal(b.x,240);
+  }
+  assert.equal(picks,before,'Moving a captured bubble must not hit-test any other bubble');
+  assert.deepEqual(events,[a]);
 });

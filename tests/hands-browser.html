@@ -4,9 +4,9 @@
 <script type="module">
 const frame=document.querySelector('iframe'),result=document.querySelector('pre'),button=document.querySelector('button');
 const wait=ms=>new Promise(r=>setTimeout(r,ms));
-const until=async(test,limit=30000)=>{const end=performance.now()+limit;while(performance.now()<end){if(test())return;await wait(100);}throw new Error('Timed out');};
+const until=async(test,limit=30000,interval=100)=>{const end=performance.now()+limit;while(performance.now()<end){if(test())return;await wait(interval);}throw new Error('Timed out');};
 button.onclick=async()=>{
- button.disabled=true;const rows=[];let animation=0;let videoStream;
+ button.disabled=true;const rows=[];let animation=0;let videoStream,audioContext,audioStream;
  const report=(label,ok,data)=>{rows.push({label,pass:ok,data});result.textContent=JSON.stringify(rows,null,2);if(!ok)throw new Error(label);};
  try{
   const win=frame.contentWindow,doc=win.document,status=()=>win.bubbleBreath.status();
@@ -19,14 +19,39 @@ button.onclick=async()=>{
   pointer('pointerdown',b.x,b.y);await wait(60);pointer('pointerup',b.x,b.y);await wait(90);
   pointer('pointerdown',b.x,b.y);await wait(60);pointer('pointerup',b.x,b.y);
   report('Double click pops exactly once and selects a note',status().bubblesOnPage===0&&status().bubblesPopped===1&&!!status().lastNote,status());
-  canvas.setPointerCapture=originalCapture;
   const video=document.createElement('canvas');video.width=320;video.height=240;const ctx=video.getContext('2d');
   animation=setInterval(()=>{ctx.fillStyle='#ede8e0';ctx.fillRect(0,0,320,240);ctx.fillStyle='#889eab';ctx.fillRect(Date.now()/30%260,90,20,20);},33);
-  videoStream=video.captureStream(24);
+  videoStream=video.captureStream(30);
   Object.defineProperty(win.navigator.mediaDevices,'getUserMedia',{configurable:true,value:async()=>videoStream});
   doc.getElementById('camera-button').click();await until(()=>status().cameraFramesProcessed>=3||status().cameraState==='error');
   report('Actual model loads and processes generated video',status().cameraFramesProcessed>=3,status());
   report('Blank scene does not invent a hand',!status().handVisible,status());
+  doc.getElementById('practice').click();b=status().positions[0];
+  pointer('pointerdown',b.x,b.y);await wait(60);pointer('pointerup',b.x,b.y);
+  const framesBetweenClicks=status().cameraFramesProcessed;
+  await until(()=>status().cameraFramesProcessed>=framesBetweenClicks+2,1500);
+  pointer('pointerdown',b.x,b.y);await wait(60);pointer('pointerup',b.x,b.y);
+  report('Camera callbacks between pointer clicks preserve a double-click pop',status().bubblesOnPage===0&&status().bubblesPopped===2,status());
+  // Exercise the untouched breath path while the actual tracker is busy at its new cadence.
+  doc.getElementById('sound').checked=false;
+  audioContext=new AudioContext();await audioContext.resume();
+  const destination=audioContext.createMediaStreamDestination();audioStream=destination.stream;
+  const buffer=audioContext.createBuffer(1,audioContext.sampleRate*4,audioContext.sampleRate);let seed=71;const data=buffer.getChannelData(0);
+  for(let i=0;i<data.length;i++){seed=(1664525*seed+1013904223)>>>0;data[i]=(seed/4294967296-.5)*.5;}
+  const noise=audioContext.createBufferSource(),gain=audioContext.createGain(),tone=audioContext.createOscillator(),voice=audioContext.createGain();
+  gain.gain.value=voice.gain.value=0;noise.buffer=buffer;noise.loop=true;noise.connect(gain);gain.connect(destination);noise.start();tone.frequency.value=220;tone.connect(voice);voice.connect(destination);tone.start();
+  Object.defineProperty(win.navigator.mediaDevices,'getUserMedia',{configurable:true,value:async options=>options.audio?audioStream:videoStream});
+  Object.defineProperty(win.navigator.mediaDevices,'enumerateDevices',{configurable:true,value:async()=>[]});
+  doc.getElementById('mic-button').click();await until(()=>status().microphoneActive&&!status().calibrating,5000);
+  const onsetStart=performance.now(),cameraFrames=status().cameraFramesProcessed;
+  gain.gain.value=.07;await until(()=>status().growing,1000,8);const onsetMs=performance.now()-onsetStart;
+  report('Near-threshold breath stays prompt while the actual hand model runs',onsetMs>=150&&onsetMs<320&&status().speechFilter&&status().cameraFramesProcessed>cameraFrames,{onsetMs,...status()});
+  await wait(300);gain.gain.value=0;await until(()=>!status().growing,2000);
+  report('Concurrent camera and mic still release exactly one breath bubble',status().bubblesReleased===1,status());
+  voice.gain.value=.15;await wait(1200);report('Speech filter remains active during hand inference',!status().growing&&status().bubblesReleased===1,status());voice.gain.value=0;
+  doc.getElementById('mic-button').click();
+  report('Mic stop releases audio while camera tracking continues',audioStream.getTracks().every(t=>t.readyState==='ended')&&status().cameraState==='ready',status());
+  canvas.setPointerCapture=originalCapture;
   doc.getElementById('camera-button').click();report('Stop ends the camera track',videoStream.getTracks().every(t=>t.readyState==='ended')&&status().cameraState==='off',status());
   Object.defineProperty(win.navigator.mediaDevices,'getUserMedia',{configurable:true,value:async()=>{throw new DOMException('Denied for test','NotAllowedError');}});
   doc.getElementById('camera-button').click();await wait(100);report('Permission denial explains recovery',status().cameraState==='error'&&doc.getElementById('hand-status').textContent.includes('blocked'),doc.getElementById('hand-status').textContent);
@@ -35,6 +60,6 @@ button.onclick=async()=>{
   doc.getElementById('camera-button').click();doc.getElementById('camera-button').click();const late=video.captureStream(10);resolve(late);await wait(100);
   report('Cancel while permission is pending stops late stream',status().cameraState==='off'&&late.getTracks().every(t=>t.readyState==='ended'),status());
   result.textContent='PASS — camera lifecycle and pointer integration\n'+JSON.stringify(rows,null,2);
- }catch(e){result.textContent+='\nFAIL: '+e.message;}finally{clearInterval(animation);videoStream?.getTracks().forEach(t=>t.stop());button.disabled=false;}
+ }catch(e){result.textContent+='\nFAIL: '+e.message;}finally{clearInterval(animation);videoStream?.getTracks().forEach(t=>t.stop());audioStream?.getTracks().forEach(t=>t.stop());await audioContext?.close();button.disabled=false;}
 };
 </script></html>

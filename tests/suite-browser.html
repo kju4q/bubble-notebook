@@ -1,0 +1,23 @@
+<!doctype html><html lang="en"><meta charset="utf-8"><title>Notebook browser regression suite</title>
+<style>body{font:14px system-ui;margin:12px}button{padding:10px}pre{white-space:pre-wrap}iframe{width:100%;height:1100px}</style>
+<h1>Existing browser regression suite</h1><button id="run">Run browser suite</button><pre id="result">Seven existing fixtures plus first-run checks, sequentially, with synthetic media.</pre><iframe></iframe>
+<script type="module">
+const wait=ms=>new Promise(r=>setTimeout(r,ms)),out=document.querySelector('pre'),frame=document.querySelector('iframe'),button=document.querySelector('button');
+button.onclick=async()=>{
+ button.disabled=true;const rows=[];
+ try{
+  for(const file of ['browser.html','microphone-browser.html','hands-browser.html','geometry-browser.html','bubble-life-browser.html','layout-browser.html','overlap-browser.html','onboarding-browser.html']){
+   out.textContent=JSON.stringify({running:file,rows},null,2);
+   await new Promise(resolve=>{frame.onload=resolve;frame.src=file;});
+   const doc=frame.contentDocument;const deadline=performance.now()+120000;
+   while(!doc.querySelector('iframe')?.contentWindow.bubbleBreath&&performance.now()<deadline)await wait(50);
+   doc.querySelector('button').click();
+   let result='';
+   do{await wait(100);result=doc.querySelector('pre').textContent;}while(!/PASS|FAIL/.test(result)&&performance.now()<deadline);
+   rows.push({file,pass:result.startsWith('PASS'),result});
+   frame.src='about:blank';await wait(100);
+  }
+  out.textContent=JSON.stringify({pass:rows.every(r=>r.pass),rows},null,2);
+ }catch(e){out.textContent=JSON.stringify({pass:false,error:String(e),rows},null,2);}finally{button.disabled=false;}
+};
+</script></html>

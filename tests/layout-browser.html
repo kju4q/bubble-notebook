@@ -1,0 +1,55 @@
+<!doctype html><html lang="en"><meta charset="utf-8"><title>Notebook layout QA</title>
+<style>body{font:15px system-ui;padding:16px}button{padding:12px}pre{white-space:pre-wrap}iframe{width:100%;height:900px}</style>
+<h1>Notebook layout checks</h1><button id="run">Run layout checks</button><pre id="result">Panel, quick controls, messages, keyboard and geometry. Synthetic media only.</pre><iframe src="../dist/index.html"></iframe>
+<script type="module">
+const wait=ms=>new Promise(r=>setTimeout(r,ms));
+const until=async(test,limit=5000)=>{const start=performance.now();while(performance.now()-start<limit){if(test())return;await wait(15);}throw Error('Timed out');};
+const out=document.getElementById('result'),run=document.getElementById('run');
+run.onclick=async()=>{
+ run.disabled=true;const rows=[];let ctx,streams=[];
+ const report=(label,pass,data)=>{rows.push({label,pass,data});out.textContent=JSON.stringify(rows,null,2);if(!pass)throw Error(label);};
+ try{
+  const win=document.querySelector('iframe').contentWindow,doc=win.document,$=id=>doc.getElementById(id),status=()=>win.bubbleBreath.status();
+  const panel=$('tools-panel'),toggle=$('tools-toggle'),scene=$('scene');
+  report('Tools and diagnostics are hidden while the first-run hint is visible',panel.hidden&&toggle.getAttribute('aria-expanded')==='false'&&!$('status').getClientRects().length&&!$('diagnostic').getClientRects().length&&$('moment-toast').textContent.includes('start the mic to grow your first bubble.'));
+  const rect=scene.getBoundingClientRect();report('The notebook is the large main scene',rect.height>=460&&rect.width>win.innerWidth*.64,{canvas:rect.toJSON(),viewport:{width:win.innerWidth,height:win.innerHeight}});
+  report('Both quick controls stay visible outside the notebook with accessible names',['quick-mic','quick-camera'].every(id=>{const el=$(id),r=el.getBoundingClientRect();return el.getClientRects().length&&r.width>=44&&r.height>=44&&r.left>=0&&r.right<=win.innerWidth&&!doc.querySelector('.notebook').contains(el)&&el.getAttribute('aria-label');}));
+  toggle.focus();toggle.click();$('device').focus();doc.dispatchEvent(new win.KeyboardEvent('keydown',{key:'Escape',bubbles:true}));
+  report('Escape closes the panel and returns keyboard focus to its tab',panel.hidden&&doc.activeElement===toggle&&toggle.getAttribute('aria-expanded')==='false');
+  toggle.click();scene.dispatchEvent(new win.PointerEvent('pointerdown',{bubbles:true,button:1}));report('Clicking outside closes the paper panel',panel.hidden);
+  ctx=new AudioContext();await ctx.resume();let calls=0;
+  const makeStream=()=>{const stream=ctx.createMediaStreamDestination().stream;streams.push(stream);return stream;};
+  Object.defineProperty(win.navigator.mediaDevices,'enumerateDevices',{configurable:true,value:async()=>[]});
+  Object.defineProperty(win.navigator.mediaDevices,'getUserMedia',{configurable:true,value:async()=>{calls++;return makeStream();}});
+  $('quick-mic').click();await until(()=>status().microphoneActive);await wait(30);
+  report('One visible mic click starts the original pipeline with the panel closed',calls===1&&panel.hidden&&$('quick-mic').getAttribute('aria-label')==='Stop microphone'&&$('quick-mic').getAttribute('aria-pressed')==='true',status().mode);
+  report('Calibration appears as a small live toast',!$('moment-toast').hidden&&$('moment-toast').textContent.includes('calibrating'),$('moment-toast').textContent);
+  await until(()=>!status().calibrating);await wait(30);
+  report('Calibration completion gives the first breath hint without opening tools',$('moment-toast').textContent.includes('blow gently, then stop to release your bubble.'),$('moment-toast').textContent);
+  $('quick-mic').click();await wait(30);report('The same mic icon stops capture and resets its state',!status().microphoneActive&&streams[0].getTracks().every(t=>t.readyState==='ended')&&$('quick-mic').getAttribute('aria-pressed')==='false'&&!$('moment-toast').querySelector('[data-source="microphone"]'));
+  Object.defineProperty(win.navigator.mediaDevices,'getUserMedia',{configurable:true,value:async()=>{calls++;throw new DOMException('Denied for test','NotAllowedError');}});
+  $('quick-mic').click();await until(()=>status().mode==='error');await wait(30);
+  report('Permission errors appear outside the closed panel and the icon offers retry',panel.hidden&&$('moment-toast').textContent.includes('blocked')&&$('quick-mic').getAttribute('aria-label')==='Try microphone again',$('moment-toast').textContent);
+  await wait(8700);report('Toasts disappear on their own while details retain the message',$('moment-toast').hidden&&$('status').textContent.includes('blocked'));
+  const beforeCamera=calls;$('quick-camera').click();await until(()=>status().cameraState==='error');await wait(30);
+  report('One camera icon click reaches camera permission and surfaces recovery',calls===beforeCamera+1&&panel.hidden&&$('moment-toast').textContent.includes('Camera access was blocked')&&$('quick-camera').getAttribute('aria-pressed')==='false');
+  let resolve;Object.defineProperty(win.navigator.mediaDevices,'getUserMedia',{configurable:true,value:()=>new Promise(r=>resolve=r)});
+  $('quick-mic').click();await until(()=>!!resolve);await wait(30);const cancelLabel=$('quick-mic').getAttribute('aria-label');$('quick-mic').click();const late=makeStream();resolve(late);await wait(60);
+  report('Quick mic can cancel a pending request without leaking a late stream',cancelLabel==='Cancel microphone'&&!status().microphoneActive&&late.getTracks().every(t=>t.readyState==='ended'));
+  toggle.click();$('practice').click();await wait(30);
+  report('Practice returns focus to the unobstructed page',panel.hidden&&status().bubblesOnPage===1&&doc.activeElement===scene);
+  scene.dispatchEvent(new win.KeyboardEvent('keydown',{key:' ',bubbles:true}));const original=status().positions[0];scene.dispatchEvent(new win.KeyboardEvent('keydown',{key:'ArrowRight',bubbles:true}));
+  report('Existing keyboard selection and movement still work',status().positions[0].x===original.x+10,status().positions[0]);
+  toggle.click();$('geometry-open').click();await wait(1000);
+  const canvasRect=scene.getBoundingClientRect(),sliderRect=$('geometry-scale').getBoundingClientRect(),y=sliderRect.top-canvasRect.top+sliderRect.height/2;
+  const previousCapture=scene.setPointerCapture;scene.setPointerCapture=()=>{};
+  const pointer=(type,x)=>scene.dispatchEvent(new win.PointerEvent(type,{bubbles:true,button:0,pointerId:1,clientX:canvasRect.left+x,clientY:canvasRect.top+y}));
+  const left=sliderRect.left-canvasRect.left+8,right=sliderRect.right-canvasRect.left-8;
+  pointer('pointerdown',left);pointer('pointermove',right);pointer('pointerup',right);scene.setPointerCapture=previousCapture;
+  report('The desk ruler remains in the hand/pointer range and changes the exact ratios',y>=50&&y<=canvasRect.height-35&&status().geometry.scale===2&&$('geometry-area').textContent==='4.00×'&&$('geometry-volume').textContent==='8.00×'&&$('geometry-pressure').textContent==='0.50×',{sliderY:y,handMaximumY:canvasRect.height-35,geometry:status().geometry});
+  toggle.click();doc.dispatchEvent(new win.KeyboardEvent('keydown',{key:'Escape',bubbles:true}));report('Escape closes tools before leaving the geometry study',panel.hidden&&status().geometry.active&&doc.activeElement===toggle);
+  doc.dispatchEvent(new win.KeyboardEvent('keydown',{key:'Escape',bubbles:true}));await wait(800);report('The next Escape returns to bubbles with keyboard focus on the page',!status().geometry.active&&status().bubblesOnPage===1&&doc.activeElement===scene);
+  out.textContent='PASS — layout, quick controls, toasts and keyboard access\n'+JSON.stringify(rows,null,2);
+ }catch(e){out.textContent+='\nFAIL: '+e.message;}finally{streams.forEach(s=>s.getTracks().forEach(t=>t.stop()));await ctx?.close();run.disabled=false;}
+};
+</script></html>

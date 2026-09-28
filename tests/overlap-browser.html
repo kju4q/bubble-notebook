@@ -1,0 +1,54 @@
+<!doctype html><html lang="en"><meta charset="utf-8"><title>Overlap drag QA</title>
+<style>body{font:15px system-ui;padding:16px}button{padding:12px}iframe{width:100%;height:850px}pre{white-space:pre-wrap}</style>
+<h1>Captured bubble drag checks</h1><button id="run">Run overlap checks</button><p>Scripted landmarks and generated video in an isolated notebook. No physical camera.</p><iframe src="../dist/index.html"></iframe><pre id="result">Idle</pre>
+<script type="module">
+const wait=ms=>new Promise(r=>setTimeout(r,ms));
+const until=async(test,limit=4000)=>{const end=performance.now()+limit;while(performance.now()<end){if(test())return;await wait(10);}throw Error('Timed out');};
+const out=document.getElementById('result'),run=document.getElementById('run');
+run.onclick=async()=>{
+ run.disabled=true;const rows=[];let stream,animation,win;
+ const report=(label,pass,data)=>{rows.push({label,pass,data});out.textContent=JSON.stringify(rows,null,2);if(!pass)throw Error(label);};
+ try{
+  win=document.querySelector('iframe').contentWindow;const doc=win.document,$=id=>doc.getElementById(id),status=()=>win.bubbleBreath.status(),canvas=$('scene');
+  $('sound').checked=false;const rect=canvas.getBoundingClientRect();
+  const pointer=(type,x,y)=>canvas.dispatchEvent(new win.PointerEvent(type,{bubbles:true,button:0,pointerId:1,clientX:rect.left+x,clientY:rect.top+y}));
+  canvas.setPointerCapture=()=>{};$('practice').click();let a=status().positions[0];
+  pointer('pointerdown',a.x,a.y);pointer('pointermove',rect.width*.25,rect.height*.4);pointer('pointerup',rect.width*.25,rect.height*.4);
+  $('practice').click();a=status().positions.find(b=>b.id===a.id);const b=status().positions.find(b=>b.id!==a.id);
+  const landmarks=(x,y,ratio)=>{const points=Array.from({length:21},()=>({x:.5,y:.5}));points[0]={x:.5,y:.8};points[9]={x:.5,y:.6};points[8]={x:1-(x-50)/(rect.width-62),y:(y-50)/(rect.height-85)};points[4]={x:points[8].x+ratio*.2,y:points[8].y};return points;};
+  const at=(x,y,ratio)=>{win.__overlapLandmarks=landmarks(x,y,ratio);};
+  // Only this test iframe substitutes model output; all camera scheduling,
+  // grip filtering, coordinate mapping, interaction and drawing remain real.
+  const script=doc.createElement('script');script.type='module';script.src='../tests/overlap-input.mjs';doc.body.append(script);await until(()=>win.__overlapReady);
+  const video=document.createElement('canvas');video.width=320;video.height=240;const videoContext=video.getContext('2d');animation=setInterval(()=>{videoContext.fillStyle=Date.now()%2?'#eee':'#ddd';videoContext.fillRect(0,0,320,240);},33);stream=video.captureStream(30);
+  Object.defineProperty(win.navigator.mediaDevices,'getUserMedia',{configurable:true,value:async()=>stream});
+  const context=canvas.getContext('2d'),fillText=context.fillText,clear=context.clearRect;let paints=[];
+  context.clearRect=function(...args){paints=[];return clear.apply(this,args);};
+  context.fillText=function(text,...args){if(/^[A-G][45]$/.test(text)){const matrix=this.getTransform();paints.push({x:matrix.e/matrix.a,y:matrix.f/matrix.d});}return fillText.call(this,text,...args);};
+  at(a.x,a.y,1);$('camera-button').click();await until(()=>status().handVisible);at(a.x,a.y,.25);await until(()=>status().heldBubble===a.id);
+  report('Grabbing lifts the chosen bubble to the front of the stack',status().positions.at(-1).id===a.id,status().positions);
+  at(b.x,b.y,.25);await wait(110);
+  let position=status().positions.find(p=>p.id===a.id);
+  report('A hand drag keeps its bubble when crossing an overlapping bubble',status().heldBubble===a.id&&Math.hypot(position.x-b.x,position.y-b.y)<2,{held:status().heldBubble,position});
+  const frameCount=win.__overlapFrames;
+  win.__overlapQueue=[landmarks(b.x,b.y,.64),landmarks(b.x,b.y,.47)];at(b.x,b.y,.47);await until(()=>win.__overlapFrames>=frameCount+2);
+  report('One ambiguous opening cannot release or switch to the bubble underneath',status().heldBubble===a.id,status());
+  const target={x:b.x+85,y:b.y+45};at(target.x,target.y,.25);await wait(110);position=status().positions.find(p=>p.id===a.id);
+  report('The same bubble continues moving after the overlap',status().heldBubble===a.id&&Math.hypot(position.x-target.x,position.y-target.y)<2,position);
+  $('practice').click();await wait(80);position=status().positions.find(p=>p.id===a.id);const lastPaint=paints.at(-1);
+  report('The grabbed bubble is painted last even when another bubble is added',status().positions.at(-1).id!==a.id&&lastPaint&&Math.hypot(lastPaint.x-position.x,lastPaint.y-position.y)<2,{position,lastPaint});
+  const beforeLoss=win.__overlapFrames;win.__overlapQueue=[null,landmarks(target.x,target.y,.25)];await until(()=>win.__overlapFrames>=beforeLoss+2);
+  report('A single missed landmark frame retains the captured bubble',status().heldBubble===a.id,status().heldBubble);
+  at(target.x,target.y,1);await until(()=>status().heldBubble===null);
+  report('Clearly opening fingers still releases the dragged bubble',!status().geometry.active&&status().bubblesPopped===0,status());
+  position=status().positions.find(p=>p.id===a.id);at(position.x,position.y,1);await wait(50);
+  for(let i=0;i<2;i++){at(position.x,position.y,.25);await wait(65);at(position.x,position.y,1);await wait(65);}
+  report('Two deliberate quick pinches still pop exactly the selected bubble',status().bubblesPopped===1&&!status().positions.some(p=>p.id===a.id),status());
+  position=status().positions.at(-1);at(position.x,position.y,1);await wait(65);at(position.x,position.y,.25);await until(()=>status().heldBubble===position.id);
+  win.__overlapLandmarks=null;await until(()=>!status().handVisible);
+  report('Sustained tracking loss still releases safely',status().heldBubble===null,status());
+  $('camera-button').click();context.fillText=fillText;context.clearRect=clear;
+  out.textContent='PASS — overlap capture, grip filtering and draw order\n'+JSON.stringify(rows,null,2);
+ }catch(error){out.textContent+='\nFAIL: '+error.message;}finally{clearInterval(animation);stream?.getTracks().forEach(t=>t.stop());run.disabled=false;}
+};
+</script></html>

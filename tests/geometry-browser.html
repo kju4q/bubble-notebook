@@ -4,6 +4,7 @@
 <script type="module">
 const wait=ms=>new Promise(r=>setTimeout(r,ms));
 const out=document.getElementById('result'),button=document.getElementById('run');
+if(new URLSearchParams(location.search).has('narrow')){const frame=document.querySelector('iframe');frame.style.width='390px';frame.style.height='844px';}
 button.onclick=async()=>{
  button.disabled=true;const rows=[];
  const report=(label,pass,data)=>{rows.push({label,pass,data});out.textContent=JSON.stringify(rows,null,2);if(!pass)throw new Error(label);};
@@ -13,19 +14,36 @@ button.onclick=async()=>{
   const pointer=(type,x,y)=>{const r=canvas.getBoundingClientRect();canvas.dispatchEvent(new win.PointerEvent(type,{bubbles:true,clientX:r.left+x,clientY:r.top+y,pointerId:1,button:0}));};
   doc.getElementById('practice').click();const original=status().positions[0];
   pointer('pointerdown',original.x,original.y);await wait(1000);
-  report('Still hold reveals geometry',status().geometry.active,status().geometry);
+  report('A one-second pinch leaves time to explore',!status().geometry.active&&status().heldBubble===original.id,status().geometry);
+  pointer('pointermove',original.x+40,original.y);await wait(1100);
+  report('Moving restarts the geometry hold timer',!status().geometry.active,status().geometry);
+  await wait(1100);
+  report('Two seconds still after dragging reveals geometry',status().geometry.active,status().geometry);
+  report('Geometry opens at the slider midpoint with correct live ratios',status().geometry.scale===1.5&&doc.getElementById('geometry-scale').value==='1.5'&&doc.getElementById('geometry-area').textContent==='2.25×'&&doc.getElementById('geometry-volume').textContent==='3.38×'&&doc.getElementById('geometry-pressure').textContent==='0.67×',status().geometry);
+  report('Geometry omits the bubble footer and redundant sphere subtitle',win.getComputedStyle(doc.querySelector('footer')).display==='none'&&!doc.querySelector('.geometry-heading strong'));
+  if(win.innerWidth>950){const a=doc.querySelector('.geometry-wash').getBoundingClientRect(),b=doc.getElementById('geometry-panel').getBoundingClientRect();report('Sphere and instruction panels align at the top',Math.abs(a.top-b.top)<1,{sphereTop:a.top,instructionTop:b.top});}
+  const sceneRect=canvas.getBoundingClientRect(),sliderRect=doc.getElementById('geometry-scale').getBoundingClientRect();
+  report('The large ruler stays reachable without horizontal overflow',sliderRect.height>=44&&sliderRect.top-sceneRect.top+sliderRect.height/2<=sceneRect.height-35&&doc.documentElement.scrollWidth<=win.innerWidth,{width:win.innerWidth,sliderHeight:sliderRect.height});
   pointer('pointerup',original.x,original.y);await wait(600);
-  const yaw=status().geometry.yaw;pointer('pointerdown',160,160);pointer('pointermove',240,180);pointer('pointerup',240,180);
+  const yaw=status().geometry.yaw,dragEnd=160+canvas.getBoundingClientRect().width*.15;
+  pointer('pointerdown',160,160);pointer('pointermove',dragEnd,180);pointer('pointerup',dragEnd,180);
   report('Dragging rotates actual 3D geometry',Math.abs(status().geometry.yaw-yaw)>.5,status().geometry);
+  const slider=doc.getElementById('geometry-scale');slider.value='1.25';slider.dispatchEvent(new win.Event('input',{bubbles:true}));
+  report('Slider input updates the sphere and every ratio immediately',status().geometry.scale===1.25&&doc.getElementById('geometry-scale-value').textContent==='1.25×'&&doc.getElementById('geometry-area').textContent==='1.56×'&&doc.getElementById('geometry-volume').textContent==='1.95×'&&doc.getElementById('geometry-pressure').textContent==='0.80×',status().geometry);
   doc.getElementById('geometry-double').click();await wait(600);
   report('Double radius displays 4× area, 8× volume, half pressure',doc.getElementById('geometry-area').textContent==='4.00×'&&doc.getElementById('geometry-volume').textContent==='8.00×'&&doc.getElementById('geometry-pressure').textContent==='0.50×',status().geometry);
   doc.getElementById('geometry-reset').click();report('Reset restores original ratios',status().geometry.scale===1,status().geometry);
   doc.getElementById('geometry-back').click();await wait(1000);
   report('Return preserves the original bubble and radius',!status().geometry.active&&status().bubblesOnPage===1&&status().positions[0].r===original.r,status());
+  const context=canvas.getContext('2d'),arc=context.arc;let particleDrawAt=0;
+  context.arc=function(...args){if(args[2]===2)particleDrawAt=performance.now();return arc.apply(this,args);};
+  report('Returning restores the bubble-page footer',win.getComputedStyle(doc.querySelector('footer')).display!=='none'&&doc.querySelector('footer').textContent.includes('grab · move · pop · play'));
   let b=status().positions[0];pointer('pointerdown',b.x,b.y);await wait(50);pointer('pointerup',b.x,b.y);await wait(80);pointer('pointerdown',b.x,b.y);await wait(50);pointer('pointerup',b.x,b.y);
   report('Quick double pinch still pops instead of opening geometry',status().bubblesPopped===1&&!status().geometry.active,status());
-  canvas.setPointerCapture=capture;
-  doc.getElementById('geometry-open').click();report('Button provides a camera-free entry',status().geometry.active,status().geometry);
+  await wait(1000);report('Pop particles still float after one second',performance.now()-particleDrawAt<150,{lastDrawAgo:performance.now()-particleDrawAt});
+  await wait(1500);report('Pop particles finish their fade and are cleaned up',performance.now()-particleDrawAt>200,{lastDrawAgo:performance.now()-particleDrawAt});
+  context.arc=arc;canvas.setPointerCapture=capture;
+  doc.getElementById('geometry-open').click();report('Button provides a camera-free entry and restores the midpoint',status().geometry.active&&status().geometry.scale===1.5,status().geometry);
   doc.dispatchEvent(new win.KeyboardEvent('keydown',{key:'Escape',bubbles:true}));report('Escape returns to notebook',!status().geometry.active,status().geometry);
   out.textContent='PASS — geometry interaction and return flow\n'+JSON.stringify(rows,null,2);
  }catch(e){out.textContent+='\nFAIL: '+e.message;}finally{button.disabled=false;}

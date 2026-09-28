@@ -1,0 +1,47 @@
+<!doctype html><html lang="en"><meta charset="utf-8"><title>First-run hint QA</title>
+<style>body{font:14px system-ui;padding:16px}button{padding:10px}pre{white-space:pre-wrap}iframe{width:100%;height:900px}</style>
+<h1>First-run actions</h1><button id="run">Run first-run checks</button><pre id="result">Generated audio and video, real app actions and model.</pre><iframe src="../dist/index.html"></iframe>
+<script type="module">
+const wait=ms=>new Promise(r=>setTimeout(r,ms));
+const until=async(test,limit=30000)=>{const end=performance.now()+limit;while(performance.now()<end){if(test())return;await wait(20);}throw Error('Timed out');};
+const out=document.querySelector('pre'),button=document.querySelector('button');
+button.onclick=async()=>{
+ button.disabled=true;let ctx,animation,videoStream;const rows=[];
+ const check=(label,pass,data)=>{rows.push({label,pass,data});out.textContent=JSON.stringify(rows,null,2);if(!pass)throw Error(label);};
+ try{
+  const win=document.querySelector('iframe').contentWindow,doc=win.document,$=id=>doc.getElementById(id),read=()=>win.bubbleBreath.status(),hint=()=>$('moment-toast').querySelector('[data-source="first-run"]')?.textContent;
+  check('The initial hint and purpose are visible before permissions',hint()==='start the mic to grow your first bubble.'&&$('input-purpose').getClientRects().length>0);
+  $('sound').checked=false;ctx=new AudioContext();await ctx.resume();const dest=ctx.createMediaStreamDestination(),gain=ctx.createGain(),noise=ctx.createBufferSource(),buffer=ctx.createBuffer(1,ctx.sampleRate*2,ctx.sampleRate);let seed=71;
+  const data=buffer.getChannelData(0);for(let i=0;i<data.length;i++){seed=(1664525*seed+1013904223)>>>0;data[i]=(seed/4294967296-.5)*.5;}
+  gain.gain.value=0;noise.buffer=buffer;noise.loop=true;noise.connect(gain);gain.connect(dest);noise.start();
+  Object.defineProperty(win.navigator.mediaDevices,'getUserMedia',{configurable:true,value:async()=>dest.stream});Object.defineProperty(win.navigator.mediaDevices,'enumerateDevices',{configurable:true,value:async()=>[]});
+  $('quick-mic').click();await until(()=>read().mode==='ready');await wait(30);
+  check('Ready advances to blowing guidance',hint()==='blow gently, then stop to release your bubble.');
+  gain.gain.value=.8;await until(()=>read().growing);await wait(300);gain.gain.value=0;await until(()=>read().bubblesReleased===1);await wait(30);
+  check('The first breath release advances to the camera hint',hint()==='start the camera to move bubbles with your hand.');$('quick-mic').click();
+  const video=document.createElement('canvas');video.width=320;video.height=240;const g=video.getContext('2d');animation=setInterval(()=>{g.fillStyle='#e8e2d5';g.fillRect(0,0,320,240);g.fillStyle='#8eaaa2';g.fillRect(Date.now()/30%280,100,20,20);},33);videoStream=video.captureStream(30);
+  const originalFetch=win.fetch;
+  win.fetch=async function(input,init){if(String(input).endsWith('hand_landmarker.task'))await wait(6800);return originalFetch.call(this,input,init);};
+  Object.defineProperty(win.navigator.mediaDevices,'getUserMedia',{configurable:true,value:async()=>videoStream});$('quick-camera').click();
+  await until(()=>read().cameraState==='loading');await wait(5800);
+  check('A slow real model download keeps the loading toast past 5.5 seconds',read().cameraState==='loading'&&$('moment-toast').textContent.includes('loading hand tracking, first start downloads about 20 MB.'));
+  await until(()=>read().cameraFramesProcessed>2);await wait(30);
+  win.fetch=originalFetch;
+  check('Readiness removes the persistent loading message',!$('moment-toast').textContent.includes('first start downloads'));
+  check('Camera readiness advances to open-hand and pinch guidance',hint()==='show an open hand, then pinch a bubble to grab it.');
+  const canvas=$('scene'),rect=canvas.getBoundingClientRect();canvas.setPointerCapture=()=>{};
+  const pointer=(type,x,y)=>canvas.dispatchEvent(new win.PointerEvent(type,{bubbles:true,button:0,pointerId:1,clientX:rect.left+x,clientY:rect.top+y}));
+  let b=read().positions[0];pointer('pointerdown',b.x,b.y);await wait(30);$('hand-status').textContent='Holding a bubble · open your fingers to release.';await wait(30);
+  check('The first grab hint survives ordinary tracking status changes',hint()==='move to drag. open your fingers to let go. hold still for 2 seconds to open the math.');
+  pointer('pointermove',b.x+40,b.y);pointer('pointerup',b.x+40,b.y);await wait(30);
+  check('The first hand or pointer release shows the pop hint',hint()==='two quick pinches on a bubble pop it.');
+  await wait(5600);b=read().positions[0];pointer('pointerdown',b.x,b.y);pointer('pointermove',b.x+40,b.y);pointer('pointerup',b.x+40,b.y);await wait(30);
+  check('Further grabs and releases never restart the tutorial',!hint());
+  $('quick-camera').click();check('The camera still stops normally',videoStream.getTracks().every(t=>t.readyState==='ended'));
+  $('hand-status').textContent='Loading hand tracking… this can take a few seconds.';await wait(30);
+  $('hand-status').textContent='Hand tracking could not load. Check your connection and start the camera again.';await wait(30);
+  check('A tracker failure replaces the loading message with recovery guidance',!$('moment-toast').textContent.includes('first start downloads')&&$('moment-toast').textContent.includes('could not load'));
+  out.textContent='PASS — first-run actions\n'+JSON.stringify(rows,null,2);
+ }catch(e){out.textContent+='\nFAIL: '+e.message;}finally{clearInterval(animation);videoStream?.getTracks().forEach(t=>t.stop());await ctx?.close();button.disabled=false;}
+};
+</script></html>

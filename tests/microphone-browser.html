@@ -1,0 +1,60 @@
+<!doctype html><html lang="en"><meta charset="utf-8"><title>Microphone response and devices QA</title>
+<style>body{font:15px system-ui;padding:18px}button{padding:12px}pre{white-space:pre-wrap}iframe{width:100%;height:1000px}</style>
+<h1>Microphone timing and device checks</h1><button id="run">Run microphone checks</button><pre id="result">Generated audio and two simulated devices. No physical microphone is opened.</pre><iframe src="../dist/index.html"></iframe>
+<script type="module">
+const wait=ms=>new Promise(r=>setTimeout(r,ms));
+const until=async(test,limit=5000)=>{const start=performance.now();while(performance.now()-start<limit){if(test())return performance.now()-start;await wait(8);}throw Error('Timed out');};
+const out=document.getElementById('result'),run=document.getElementById('run');
+run.onclick=async()=>{
+ run.disabled=true;const rows=[];let ctx,win,streams=[];
+ const report=(label,pass,data)=>{rows.push({label,pass,data});out.textContent=JSON.stringify(rows,null,2);if(!pass)throw Error(label);};
+ try{
+  win=document.querySelector('iframe').contentWindow;const doc=win.document,status=()=>win.bubbleBreath.status();
+  doc.getElementById('sound').checked=false;doc.getElementById('sound').dispatchEvent(new win.Event('change'));
+  ctx=new AudioContext();await ctx.resume();
+  const buffer=ctx.createBuffer(1,ctx.sampleRate*4,ctx.sampleRate);let seed=71;const data=buffer.getChannelData(0);
+  for(let i=0;i<data.length;i++){seed=(1664525*seed+1013904223)>>>0;data[i]=(seed/4294967296-.5)*.5;}
+  const profiles={};
+  for(const [id,label] of [['builtin','Laptop microphone'],['external','USB recording microphone']]){
+   const destination=ctx.createMediaStreamDestination(),noise=ctx.createBufferSource(),gain=ctx.createGain(),tone=ctx.createOscillator(),voice=ctx.createGain();
+   gain.gain.value=voice.gain.value=0;noise.buffer=buffer;noise.loop=true;noise.connect(gain);gain.connect(destination);noise.start();tone.frequency.value=220;tone.connect(voice);voice.connect(destination);tone.start();profiles[id]={id,label,destination,gain,voice};
+  }
+  let devices=[{kind:'audioinput',deviceId:'default',groupId:'external',label:'Default - USB recording microphone'},...Object.values(profiles).map(p=>({kind:'audioinput',deviceId:p.id,groupId:p.id,label:p.label}))];
+  Object.defineProperty(win.navigator.mediaDevices,'enumerateDevices',{configurable:true,value:async()=>devices});
+  const makeStream=id=>{const p=profiles[id],s=p.destination.stream.clone(),track=s.getAudioTracks()[0];Object.defineProperty(track,'label',{configurable:true,value:p.label});track.getSettings=()=>({deviceId:id,groupId:id,sampleRate:ctx.sampleRate,echoCancellation:true,noiseSuppression:false,autoGainControl:false,channelCount:1});streams.push(s);return s;};
+  Object.defineProperty(win.navigator.mediaDevices,'getUserMedia',{configurable:true,value:async args=>makeStream(args.audio.deviceId?.exact||'external')});
+  doc.getElementById('mic-button').click();await until(()=>status().microphoneActive&&!status().calibrating);
+  report('Default resolves to the actual external track, not the first physical device',doc.getElementById('device').value==='external'&&doc.getElementById('active-microphone').textContent.includes('USB recording microphone'),status().microphone);
+  profiles.external.gain.gain.value=.07;const nearOnset=await until(()=>status().growing,1000);
+  report('Near-threshold first breath starts promptly with speech filter enabled',nearOnset>=150&&nearOnset<320&&status().speechFilter,{onsetMs:Math.round(nearOnset),...status()});
+  profiles.external.gain.gain.value=0;await until(()=>!status().growing);const count=status().bubblesReleased;
+  profiles.external.voice.gain.value=.15;await wait(1200);report('Voiced input still cannot trigger growth',!status().growing&&status().bubblesReleased===count,status());profiles.external.voice.gain.value=0;
+  const externalTrack=streams.at(-1).getAudioTracks()[0];doc.getElementById('device').value='builtin';doc.getElementById('device').dispatchEvent(new win.Event('change'));
+  await until(()=>status().microphone?.deviceId==='builtin'&&!status().calibrating);
+  report('Switch stops the old input and calibrates the named built-in microphone',externalTrack.readyState==='ended'&&doc.getElementById('device').value==='builtin'&&status().microphone.boost===1,status().microphone);
+  doc.getElementById('calibrate-distance').click();profiles.builtin.gain.gain.value=.028;await wait(2300);profiles.builtin.gain.gain.value=0;await until(()=>!status().calibrating);
+  const builtinBoost=status().microphone.boost;
+  report('Quiet built-in breath sets a bounded device gain',builtinBoost>5&&builtinBoost<=8&&status().sensitivity===50&&status().speechFilter,{boost:builtinBoost,status:doc.getElementById('status').textContent});
+  profiles.builtin.gain.gain.value=.028;const builtinOnset=await until(()=>status().growing,1000);
+  report('Calibrated quiet built-in breath responds promptly',builtinOnset>=150&&builtinOnset<320,{onsetMs:Math.round(builtinOnset),...status()});
+  profiles.builtin.gain.gain.value=0;await until(()=>!status().growing);const afterBreath=status().bubblesReleased;
+  profiles.builtin.voice.gain.value=.006;await wait(1400);report('Input gain does not turn quiet voiced speech into a breath',!status().growing&&status().bubblesReleased===afterBreath,status());profiles.builtin.voice.gain.value=0;
+  doc.getElementById('sensitivity').value='72';doc.getElementById('sensitivity').dispatchEvent(new win.Event('input'));
+  doc.getElementById('device').value='external';doc.getElementById('device').dispatchEvent(new win.Event('change'));await until(()=>status().microphone?.deviceId==='external'&&!status().calibrating);
+  report('External microphone restores its own sensitivity and gain',status().sensitivity===50&&status().microphone.boost===1,status().microphone);
+  doc.getElementById('device').value='builtin';doc.getElementById('device').dispatchEvent(new win.Event('change'));await until(()=>status().microphone?.deviceId==='builtin'&&!status().calibrating);
+  report('Built-in microphone retains its calibrated distance and sensitivity',status().sensitivity===72&&status().microphone.boost===builtinBoost,status());
+  win.navigator.mediaDevices.dispatchEvent(new win.Event('devicechange'));await wait(100);
+  report('An unrelated device-list refresh keeps the active mic calibration',!status().calibrating&&status().microphone.boost===builtinBoost&&status().sensitivity===72,status().microphone);
+  const track=streams.at(-1).getAudioTracks()[0],ended=track.onended;devices=devices.filter(d=>d.deviceId!=='builtin');track.stop();ended();await wait(100);
+  report('Disconnect stops capture and keeps the missing selection explicit',!status().microphoneActive&&doc.getElementById('device').selectedOptions[0].textContent.includes('disconnected')&&!doc.getElementById('active-microphone').textContent.startsWith('Active:'),doc.getElementById('device').selectedOptions[0].textContent);
+  let resolve;Object.defineProperty(win.navigator.mediaDevices,'getUserMedia',{configurable:true,value:()=>new Promise(r=>resolve=r)});
+  doc.getElementById('device').value='external';doc.getElementById('device').dispatchEvent(new win.Event('change'));doc.getElementById('mic-button').click();await until(()=>!!resolve);doc.getElementById('mic-button').click();const late=makeStream('external');resolve(late);await wait(100);
+  report('Explicit cancel stops a late microphone stream',late.getTracks().every(t=>t.readyState==='ended')&&!status().microphoneActive,status());
+  resolve=null;doc.getElementById('mic-button').click();await until(()=>!!resolve);
+  Object.defineProperty(doc,'hidden',{configurable:true,get:()=>true});doc.dispatchEvent(new win.Event('visibilitychange'));const hiddenLate=makeStream('external');resolve(hiddenLate);await wait(100);delete doc.hidden;
+  report('Hiding while permission is pending stops a late stream',hiddenLate.getTracks().every(t=>t.readyState==='ended')&&!status().microphoneActive,status());
+  out.textContent='PASS — microphone timing, device selection and calibration\n'+JSON.stringify(rows,null,2);
+ }catch(e){out.textContent+='\nFAIL: '+e.message;}finally{streams.forEach(s=>s.getTracks().forEach(t=>t.stop()));await ctx?.close();run.disabled=false;}
+};
+</script></html>

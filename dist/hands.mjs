@@ -1,13 +1,13 @@
-import{handPoint}from'./interaction.mjs';
+import{PinchGrip}from'./interaction.mjs';
 
 export class CameraHands{
-  constructor({video,onPoint,onStatus}){Object.assign(this,{video,onPoint,onStatus});this.state='off';this.stream=null;this.detector=null;this.generation=0;this.raf=0;this.lastFrame=-1;this.lastRun=0;this.seenAt=0;this.closed=false;this.modelVersion='1.0.1';this.frames=0;}
+  constructor({video,onPoint,onStatus,isHolding=()=>false}){Object.assign(this,{video,onPoint,onStatus,isHolding});this.pinch=new PinchGrip();this.state='off';this.stream=null;this.detector=null;this.generation=0;this.raf=0;this.videoFrame=null;this.lastFrame=-1;this.seenAt=0;this.closed=false;this.modelVersion='1.0.1';this.frames=0;}
   async start(){
     if(this.state!=='off'&&this.state!=='error')return;
     const token=++this.generation;this.state='requesting';this.onStatus('Allow camera access, then hold one hand in view.');
     try{
       if(!navigator.mediaDevices?.getUserMedia)throw new Error('Camera access requires HTTPS or localhost.');
-      const received=await navigator.mediaDevices.getUserMedia({video:{facingMode:'user',width:{ideal:640},height:{ideal:480},frameRate:{ideal:24,max:30}},audio:false});
+      const received=await navigator.mediaDevices.getUserMedia({video:{facingMode:'user',width:{ideal:640},height:{ideal:480},frameRate:{ideal:30,max:30}},audio:false});
       if(token!==this.generation){received.getTracks().forEach(t=>t.stop());return;}
       this.stream=received;this.video.srcObject=received;await this.video.play();
       this.stream.getVideoTracks()[0].onended=()=>this.stop('Camera disconnected. Start it again to continue.');
@@ -22,20 +22,26 @@ export class CameraHands{
         if(token!==this.generation){detector.close();return;}this.detector=detector;
       }
       if(token!==this.generation)return;
-      this.state='ready';this.lastFrame=-1;this.lastRun=0;this.seenAt=0;this.closed=false;this.onStatus('Show an open hand. Your fingertip becomes the cursor.');
-      const loop=now=>{
+      this.state='ready';this.lastFrame=-1;this.seenAt=0;this.closed=false;this.pinch.reset();this.onStatus('Show an open hand. Your fingertip becomes the cursor.');
+      const schedule=()=>{
+        if(typeof this.video.requestVideoFrameCallback==='function')this.videoFrame=this.video.requestVideoFrameCallback(loop);
+        else this.raf=requestAnimationFrame(loop);
+      };
+      const loop=(now,metadata)=>{
         if(token!==this.generation||this.state==='off')return;
-        if(this.video.readyState>=2&&this.video.currentTime!==this.lastFrame&&now-this.lastRun>=65){
-          this.lastRun=now;this.lastFrame=this.video.currentTime;
+        // Video callbacks follow decoded frames rather than display refreshes.
+        const frame=metadata?.presentedFrames??this.video.getVideoPlaybackQuality?.().totalVideoFrames??this.video.currentTime;
+        if(this.video.readyState>=2&&frame!==this.lastFrame){
+          this.lastFrame=frame;
           try{
             const result=this.detector.detectForVideo(this.video,now);this.frames++;
-            const point=handPoint(result.landmarks[0],this.closed);
+            const point=this.pinch.update(result.landmarks[0],now,this.isHolding());
             if(point){this.seenAt=now;this.closed=point.closed;this.state='tracking';this.onPoint(point,now);}
-            else if(!this.seenAt||now-this.seenAt>250){this.state='ready';this.closed=false;this.onPoint(null,now);this.onStatus('Hand out of view. Show an open hand to continue.');}
+            else if(!this.seenAt||now-this.seenAt>250){this.state='ready';this.closed=false;this.pinch.reset();this.onPoint(null,now);this.onStatus('Hand out of view. Show an open hand to continue.');}
           }catch{this.stop('Tracking paused. Restart the camera to try again.');return;}
         }
-        this.raf=requestAnimationFrame(loop);
-      };this.raf=requestAnimationFrame(loop);
+        schedule();
+      };schedule();
     }catch(e){
       if(token!==this.generation)return;
       const messages={NotAllowedError:'Camera access was blocked. Allow it in your browser’s site settings, then start again.',NotFoundError:'No camera found. You can still drag and double-click a bubble.',NotReadableError:'The camera could not start. Check whether another app is using it.'};
@@ -43,7 +49,7 @@ export class CameraHands{
     }
   }
   stop(message='Camera is off. You can still drag bubbles with the pointer.'){
-    this.generation++;cancelAnimationFrame(this.raf);this.stream?.getTracks().forEach(t=>{t.onended=null;t.stop();});this.stream=null;this.video.pause();this.video.srcObject=null;this.state='off';this.closed=false;this.onPoint(null,performance.now());this.onStatus(message);
+    this.generation++;cancelAnimationFrame(this.raf);if(this.videoFrame!==null)this.video.cancelVideoFrameCallback?.(this.videoFrame);this.videoFrame=null;this.stream?.getTracks().forEach(t=>{t.onended=null;t.stop();});this.stream=null;this.video.pause();this.video.srcObject=null;this.state='off';this.closed=false;this.pinch.reset();this.onPoint(null,performance.now());this.onStatus(message);
   }
   dispose(){this.stop();this.detector?.close();this.detector=null;}
 }
