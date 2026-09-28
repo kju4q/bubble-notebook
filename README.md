@@ -4,7 +4,7 @@ Try it: LIVE_URL_HERE
 
 I made a geometry notebook you control by blowing into your mic. Bubbles grow with your breath, play a note based on their size, and can be grabbed with your hand in the air. Hold one still and it opens into the math. I built it in Codex with GPT-6 Astra. The sound processing, the hand tracking, and the drawing all run locally in the browser, and the hand model ships with the app. One honest note: the MediaPipe library it uses tries to send anonymous usage telemetry to Google, so the app blocks that request with a content security policy. Your audio and video never leave your machine, and nothing else does either.
 
-## the prompt i started with
+## the prompt I started with
 
 "i have this notebook, the kind with the little cubes i used for geometry and math, and i'm seeing bubbles coming from somewhere in the middle of it. as long as i blow, they grow, just like soap bubbles. and depending on the bubble, it hits a note, small ones high, and when it gets bigger the note becomes bolder. more bubbles become kind of a track, like a piano. and they should have their colors, not all over, just those rainbow sides you see when a bubble catches the sun. like a little world on my laptop, i just need help connecting the dots."
 
