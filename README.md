@@ -1,6 +1,6 @@
 # the bubble notebook
 
-Try it: LIVE_URL_HERE
+Try it: [https://bubble-notebook.qendresahhoti.chatgpt.site](https://bubble-notebook.qendresahhoti.chatgpt.site)
 
 I made a geometry notebook you control by blowing into your mic. Bubbles grow with your breath, play a note based on their size, and can be grabbed with your hand in the air. Hold one still and it opens into the math. I built it in Codex with GPT-6 Astra. The sound processing, the hand tracking, and the drawing all run locally in the browser, and the hand model ships with the app. One honest note: the MediaPipe library it uses tries to send anonymous usage telemetry to Google, so the app blocks that request with a content security policy. Your audio and video never leave your machine, and nothing else does either.
 
